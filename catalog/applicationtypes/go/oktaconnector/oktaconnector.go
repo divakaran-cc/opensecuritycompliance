@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
 	"strings"
 
-	"github.com/okta/okta-sdk-golang/v2/okta"
+	"github.com/okta/okta-sdk-golang/v8/okta"
 )
 
 type APIKey struct {
@@ -23,7 +25,7 @@ type OktaConnector struct {
 	Ipv4Address            string                  `json:"ipv4Address" yaml:"ipv4Address"`
 	Ipv6Address            string                  `json:"ipv6Address" yaml:"ipv6Address"`
 	UserDefinedCredentials *UserDefinedCredentials `json:"userDefinedCredentials" yaml:"userDefinedCredentials"`
-	Client                 *okta.Client
+	Client                 *okta.APIClient
 }
 
 func (thisObj *OktaConnector) Validate() (bool, error) {
@@ -32,9 +34,9 @@ func (thisObj *OktaConnector) Validate() (bool, error) {
 		return false, err
 	}
 
-	_, _, err = thisObj.Client.User.GetUser(context.Background(), "me")
+	_, response, err := thisObj.Client.UserAPI.GetUser(context.Background(), "me").Execute()
 	if err != nil {
-		return false, thisObj.getOktaErrorMsg(err)
+		return false, thisObj.getOktaErrorMsg(err, response)
 	}
 
 	return true, nil
@@ -51,28 +53,33 @@ func (thisObj *OktaConnector) createNewClient() error {
 	}
 
 	if thisObj.Client == nil {
-		_, client, err := okta.NewClient(context.Background(), okta.WithOrgUrl(thisObj.AppURL), okta.WithToken(thisObj.UserDefinedCredentials.APIKey.APIKey))
+		config, err := okta.NewConfiguration(
+			okta.WithOrgUrl(thisObj.AppURL),
+			okta.WithToken(thisObj.UserDefinedCredentials.APIKey.APIKey),
+		)
 		if err != nil {
 			return err
 		}
-		thisObj.Client = client
+		orgURL, err := url.Parse(thisObj.AppURL)
+		if err != nil {
+			return err
+		}
+		config.Host = orgURL.Host
+		thisObj.Client = okta.NewAPIClient(config)
 	}
 
 	return nil
 }
 
-func (thisObj *OktaConnector) getOktaErrorMsg(err error) error {
+func (thisObj *OktaConnector) getOktaErrorMsg(err error, response *okta.APIResponse) error {
 	if err != nil {
 		if strings.Contains(err.Error(), "no such host") {
 			return errors.New("Invalid AppURL")
-		} else if oktaErr, ok := err.(*okta.Error); ok {
-			if strings.Contains(oktaErr.ErrorSummary, "Invalid token provided") {
-				return errors.New("Invalid URL/APIKey. Please check.")
-			}
-			return errors.New(oktaErr.Error())
-		} else {
-			return err
 		}
+		if response != nil && response.Response != nil && response.StatusCode == http.StatusUnauthorized {
+			return errors.New("Invalid URL/APIKey. Please check.")
+		}
+		return err
 	}
 	return nil
 }
